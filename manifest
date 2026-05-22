@@ -1,0 +1,20 @@
+appid            = com.hiksemi.r1.toolbox
+appname          = r1.toolbox
+version          = 1.2.7
+display_name     = R1 Toolbox
+desc             = 仅为海康R1 & R1X 刷飞牛后的问题修复等：<br><font color="pink"><b>如本工具帮到你，欢迎自愿赞赏支持持续更新❤️</b></font><br><img src="https://snote.cn/wp-content/uploads/IMG_7788.png" alt="赞赏码" width="300" height="300"/><br>1.RGB彩灯设置：支持彩虹/呼吸/单色/关闭模式。颜色预制8种。<br>2.实时监控显示：CPU、内存、磁盘、网络、进程等，支持关屏。<br>3.风扇控制：包含CPU和机箱风扇的5档手动控制，支持智能温控。<br>4.自动检测并修复双网口MAC地址重复问题，生成新的MAC地址。<br><font color="red"><b>建议安装后重启NAS，确保MAC修复生效。</b></font><br><font color="blue"><b>应用免费，如付费获得，申请退款并投诉商家！</b></font>
+arch             = x86_64
+source           = thirdparty
+maintainer       = zhangzsky
+maintainer_url   = https://github.com/ZhangZsky/r1.toolbox
+distributor      = 山归山
+distributor_url  = https://snote.cn/hiksemir1/
+auto_start       = true
+app_type         = system
+install_type     = root
+os_min_version   = 1.1.8
+install_dep_apps = ite-it87_driver
+install_wizard   = wizard/install
+config_wizard    = wizard/config
+desktop_uidir    = 
+checksum         = a362d089c06db5a9c8f9c725b7ca5e33
