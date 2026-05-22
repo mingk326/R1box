@@ -1,0 +1,370 @@
+#!/bin/bash
+
+# =============================================================================
+# 海康R1&R1X设备管理应用 - 安装初始化脚本
+# =============================================================================
+
+# 统一的日志函数 - 提供标准化的日志输出格式
+log() {
+    local level="$1"
+    local message="$2"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    case "$level" in
+        "INFO") echo -e "[$timestamp]\t📋信息\t\t$message" ;;
+        "SUCCESS") echo -e "[$timestamp]\t✅成功\t\t$message" ;;
+        "WARNING") echo -e "[$timestamp]\t🚨警告\t\t$message" ;;
+        "ERROR") echo -e "[$timestamp]\t❌错误\t\t$message" ;;
+        "STEP") echo -e "[$timestamp]\t🔧步骤\t\t$message" ;;
+        "DEBUG") echo -e "[$timestamp]\t🔍调试\t\t$message" ;;
+        "DETAIL") echo -e "[$timestamp]\t📊详情\t\t$message" ;;
+        *) echo -e "[$timestamp]\t📋信息\t\t$message" ;;
+    esac
+}
+
+# 设备型号验证
+BOARD_MODEL=$(cat /sys/class/dmi/id/board_name 2>/dev/null || echo "unknown")
+if [[ "$BOARD_MODEL" != "HS-AFS-R1" && "$BOARD_MODEL" != "HS-AFS-R1X" ]]; then
+    log "ERROR" "仅支持海康R1/R1X，当前型号：$BOARD_MODEL"
+    exit 1
+fi
+log "INFO" "设备型号验证通过：$BOARD_MODEL"
+
+log "STEP" "==================== 开始安装 ===================="
+
+# =============================================================================
+# 配置参数读取和初始化
+# =============================================================================
+
+# 读取配置参数（优先使用传入的配置参数，如果未提供则依赖于应用层面的默认值）
+RGB_MODE="$config_rgb_mode"
+RGB_COLOR="$config_rgb_color"
+SCREEN_BRIGHTNESS="$config_screen_brightness"
+# 屏幕显示模式变量
+SCREEN_MODE="${config_screen_mode:-weather}"
+# 风扇自动模式设置
+FAN_AUTO_MODE="${config_fan_auto_mode:-true}"
+
+# 颜色预设库（包含8个主要颜色）
+declare -A COLOR_PRESETS=(
+    [red]="255 0 0"     [green]="0 255 0"   [blue]="0 0 255"
+    [yellow]="255 255 0"   [purple]="255 0 255"   [cyan]="0 255 255" [orange]="255 165 0"
+    [white]="255 255 255"
+)
+
+# 根据颜色选择设置颜色
+SOLID_COLOR="${COLOR_PRESETS[$RGB_COLOR]}"
+BREATHING_COLOR="${COLOR_PRESETS[$RGB_COLOR]}"
+
+# =============================================================================
+# 步骤1: 系统依赖包安装
+# =============================================================================
+
+log "STEP" "安装Python应用依赖包"
+
+# 更新软件包索引并安装必要的依赖包
+apt-get update >/dev/null 2>&1 && log "SUCCESS" "软件包索引更新成功" || log "WARNING" "软件包索引更新失败"
+
+# 安装Python应用运行所需的依赖包
+for pkg in python3-pygame python3-psutil python3-requests fonts-wqy-microhei i2c-tools; do
+    # 检查包是否已安装，使用更准确的检测方法
+    if dpkg -l "$pkg" 2>/dev/null | grep -q "^ii"; then
+        log "DETAIL" "$pkg 已安装"
+    else
+        log "INFO" "安装 $pkg"
+        apt-get install -y $pkg >/dev/null 2>&1 && log "SUCCESS" "$pkg 安装成功" || log "ERROR" "$pkg 安装失败"
+    fi
+done
+
+# =============================================================================
+# 步骤2: RGB灯模式配置
+# =============================================================================
+
+log "STEP" "配置RGB灯显示模式"
+
+# 检查i2c-tools工具是否已安装
+if command -v i2cdetect >/dev/null 2>&1 && command -v i2cget >/dev/null 2>&1 && command -v i2cset >/dev/null 2>&1; then
+    log "INFO" "i2c-tools已正确安装"
+fi
+
+# 加载I2C设备驱动模块
+lsmod | grep -q i2c_dev || modprobe i2c_dev 2>/dev/null
+
+# 使用i2cdetect列出所有可用的I2C总线，然后扫描RGB灯控制设备（地址0x26）
+I2C_BUS=""
+# 使用i2cdetect列出总线（这是最可靠的方法）
+I2C_BUSES=$(i2cdetect -l 2>/dev/null | awk '{print $1}' | sed 's/i2c-//' | tr '\n' ' ')
+
+if [ -n "$I2C_BUSES" ]; then
+    log "INFO" "通过i2cdetect检测到可用I2C总线: $I2C_BUSES"
+    for bus in $I2C_BUSES; do
+        # 只检查实际存在的I2C总线设备
+        if [ -c "/dev/i2c-$bus" ] && i2cget -f -y $bus 0x26 0x90 2>/dev/null >/dev/null; then
+            I2C_BUS=$bus
+            log "SUCCESS" "RGB灯控制设备在总线$I2C_BUS上"
+            break
+        fi
+    done
+else
+    log "WARNING" "未检测到任何I2C总线设备"
+fi
+
+# 如果找到有效的I2C总线，则根据配置设置RGB灯模式
+if [ -n "$I2C_BUS" ]; then
+        # 先重置RGB灯状态，确保从干净状态开始配置
+        log "INFO" "重置RGB灯状态"
+        i2cset -f -y $I2C_BUS 0x26 0x90 0x0
+        i2cset -f -y $I2C_BUS 0x26 0x92 0
+        i2cset -f -y $I2C_BUS 0x26 0x93 0
+        i2cset -f -y $I2C_BUS 0x26 0x94 0
+        sleep 0.2
+        
+        # 根据向导配置设置RGB灯显示模式
+        case "$RGB_MODE" in
+            "off")
+                # 关闭模式：设置颜色寄存器为0，再设置关闭模式
+                log "INFO" "设置RGB灯关闭模式"
+                i2cset -f -y $I2C_BUS 0x26 0x90 0x0
+                sleep 0.2
+                if i2cget -f -y $I2C_BUS 0x26 0x90 2>/dev/null | grep -q "0x00"; then
+                    log "SUCCESS" "RGB灯关闭模式设置成功"
+                else
+                    log "ERROR" "RGB灯关闭模式设置失败"
+                fi
+                ;;
+            "breathing")
+                # 呼吸模式：设置指定颜色的呼吸渐变效果
+                if [ -n "$BREATHING_COLOR" ]; then
+                    read -r R G B <<< "$BREATHING_COLOR"
+                    log "INFO" "设置RGB灯呼吸模式: R=$R G=$G B=$B"
+                    # 设置RGB颜色值
+                    i2cset -f -y $I2C_BUS 0x26 0x92 $R
+                    i2cset -f -y $I2C_BUS 0x26 0x93 $G
+                    i2cset -f -y $I2C_BUS 0x26 0x94 $B
+                    sleep 0.1
+                    # 设置呼吸效果模式（寄存器值0x3表示呼吸模式）
+                    i2cset -f -y $I2C_BUS 0x26 0x90 0x3
+                    sleep 0.2
+                    if i2cget -f -y $I2C_BUS 0x26 0x90 2>/dev/null | grep -q "0x03"; then
+                        log "SUCCESS" "RGB灯呼吸模式设置成功"
+                    else
+                        log "ERROR" "RGB灯呼吸模式设置失败"
+                    fi
+                else
+                    log "ERROR" "呼吸模式颜色未定义"
+                fi
+                ;;
+            "rainbow")
+                # 彩虹模式：设置循环显示多种颜色的彩虹效果
+                log "INFO" "设置RGB灯彩虹模式"
+                # 设置彩虹模式（寄存器值0x2表示彩虹模式）
+                i2cset -f -y $I2C_BUS 0x26 0x90 0x2
+                sleep 0.2
+                if i2cget -f -y $I2C_BUS 0x26 0x90 2>/dev/null | grep -q "0x02"; then
+                    log "SUCCESS" "RGB灯彩虹模式设置成功"
+                else
+                    log "ERROR" "RGB灯彩虹模式设置失败"
+                fi
+                ;;
+            "solid")
+                # 静态单色常亮模式：设置固定颜色的持续显示
+                if [ -n "$SOLID_COLOR" ]; then
+                    read -r R G B <<< "$SOLID_COLOR"
+                    log "INFO" "设置RGB灯静态单色常亮模式: R=$R G=$G B=$B"
+                    # 设置RGB颜色值
+                    i2cset -f -y $I2C_BUS 0x26 0x92 $R
+                    i2cset -f -y $I2C_BUS 0x26 0x93 $G
+                    i2cset -f -y $I2C_BUS 0x26 0x94 $B
+                    sleep 0.1
+                    # 设置静态模式（寄存器值0x1表示静态模式）
+                    i2cset -f -y $I2C_BUS 0x26 0x90 0x1
+                    sleep 0.2
+                    if i2cget -f -y $I2C_BUS 0x26 0x90 2>/dev/null | grep -q "0x01"; then
+                        log "SUCCESS" "RGB灯静态单色常亮模式设置成功"
+                    else
+                        log "ERROR" "RGB灯静态单色常亮模式设置失败"
+                    fi
+                else
+                    log "ERROR" "单色常亮模式颜色未定义"
+                fi
+                ;;
+            *)
+                # 默认模式：使用彩虹模式作为默认显示效果
+                log "INFO" "设置RGB灯默认彩虹模式"
+                if i2cset -f -y $I2C_BUS 0x26 0x90 0x2; then
+                    log "SUCCESS" "RGB灯默认彩虹模式设置成功"
+                    sleep 0.5
+                    current_mode=$(i2cget -f -y $I2C_BUS 0x26 0x90 2>/dev/null || echo "unknown")
+                    log "DEBUG" "当前模式寄存器值: $current_mode"
+                else
+                    log "ERROR" "RGB灯默认彩虹模式设置失败"
+                fi
+                ;;
+        esac
+fi
+
+# =============================================================================
+# 步骤3: 屏幕设置
+# =============================================================================
+
+log "STEP" "设置屏幕显示参数"
+
+# 安装时默认开启屏幕
+if [ -n "$SCREEN_BRIGHTNESS" ]; then
+    # 使用有效的背光路径
+    BACKLIGHT_PATH="/sys/devices/pci0000:00/0000:00:02.0/drm/card0/card0-DSI-1/intel_backlight/brightness"
+    
+    if [ -f "$BACKLIGHT_PATH" ]; then
+        echo "$SCREEN_BRIGHTNESS" > "$BACKLIGHT_PATH"
+        log "SUCCESS" "屏幕亮度设置为: $SCREEN_BRIGHTNESS"
+    else
+        log "WARNING" "背光控制文件不存在: $BACKLIGHT_PATH"
+    fi
+else
+    log "WARNING" "屏幕亮度参数为空"
+fi
+
+# 开启屏幕显示 - 取消屏幕空白状态
+if [ -c "/dev/fb0" ]; then
+    echo 0 > "/sys/class/graphics/fb0/blank"
+    log "SUCCESS" "屏幕显示已开启"
+fi
+# =============================================================================
+# 步骤4: 双网口MAC地址重复修复
+# =============================================================================
+
+# 生成确定性MAC地址
+generate_mac() {
+    local iface="$1"
+    # 使用机器ID或主机名作为种子，确保MAC地址的确定性
+    local id=$([[ -f "/etc/machine-id" ]] && cat /etc/machine-id || echo "${HOSTNAME:-default}-${iface}")
+    local hex=$(echo -n "${id}${iface}" | sha256sum | cut -d' ' -f1 | cut -c1-12)
+    # 构建符合规范的本地管理MAC地址
+    printf "%02x:%02x:%s:%s:%s:%s" \
+        $((0x${hex:0:2} & 0xFE)) \
+        $((0x${hex:2:2} | 0x02)) \
+        "${hex:4:2}" "${hex:6:2}" "${hex:8:2}" "${hex:10:2}"
+}
+
+# 修改网络接口MAC地址
+modify_iface() {
+    local iface="$1"
+    local state=$([[ -f "/sys/class/net/${iface}/operstate" ]] && cat "/sys/class/net/${iface}/operstate" 2>/dev/null || echo "未知")
+    log "DETAIL" "处理网口: $iface (状态: ${state})"
+    
+    # 生成新的MAC地址
+    local new_mac=$(generate_mac "$iface") || { log "ERROR" "MAC生成失败"; return 1; }
+    log "INFO" "设置MAC: $new_mac"
+    
+    # 检查并处理配置
+    local conn_name="Wired-${iface}"
+    
+    # 检查连接是否存在且已设置MAC地址
+    if nmcli con show "$conn_name" >/dev/null 2>&1; then
+        local current_mac=$(nmcli -t con show "$conn_name" | grep 802-3-ethernet.cloned-mac-address | cut -d: -f2-)
+        if [[ -n "$current_mac" && "$current_mac" != "--" ]]; then
+            log "INFO" "连接已存在且已设置MAC地址，跳过修改"
+            return 0
+        else
+            log "INFO" "连接已存在但未设置MAC地址，修改连接"
+            nmcli con mod "$conn_name" 802-3-ethernet.cloned-mac-address "$new_mac" || return 1
+            log "SUCCESS" "连接修改成功（连接网线后自动生效）"
+            return 0
+        fi
+    fi
+    
+    # 处理up状态的接口
+    if [[ "$state" == "up" ]]; then
+        local conn=$(nmcli -t -f GENERAL.CONNECTION dev show "$iface" 2>/dev/null | cut -d: -f2)
+        if [[ -n "$conn" && "$conn" != "--" ]]; then
+            log "INFO" "使用现有连接: $conn"
+            nmcli con mod "$conn" 802-3-ethernet.cloned-mac-address "$new_mac" || return 1
+            log "DETAIL" "停用连接以应用新MAC地址..."
+            nmcli con down "$conn" 2>/dev/null || true
+            sleep 2
+            log "DETAIL" "重新激活连接..."
+            nmcli con up "$conn" 2>/dev/null && log "SUCCESS" "已激活连接"
+            return 0
+        fi
+    fi
+    
+    # 处理down状态的接口或创建新连接
+    if nmcli con show "$conn_name" >/dev/null 2>&1; then
+        log "INFO" "修改现有连接: $conn_name"
+        nmcli con mod "$conn_name" 802-3-ethernet.cloned-mac-address "$new_mac" || return 1
+        log "DETAIL" "激活连接以应用新MAC地址..."
+        nmcli con up "$conn_name" 2>/dev/null && log "SUCCESS" "连接激活成功"
+        log "SUCCESS" "连接修改成功"
+    else
+        # 查找包含接口名的现有连接，排除包含ovs的连接
+        local similar_cons=$(nmcli -t -f NAME con show 2>/dev/null | grep "$iface" | grep -v "ovs")
+        if [[ -n "$similar_cons" ]]; then
+            local first_con=$(echo "$similar_cons" | head -n1)
+            log "INFO" "使用现有连接: $first_con"
+            nmcli con mod "$first_con" 802-3-ethernet.cloned-mac-address "$new_mac" || return 1
+            log "DETAIL" "激活连接以应用新MAC地址..."
+            nmcli con up "$first_con" 2>/dev/null && log "SUCCESS" "连接激活成功"
+            log "SUCCESS" "连接修改成功"
+        else
+            log "INFO" "创建新连接: $conn_name"
+            nmcli con add type ethernet ifname "$iface" con-name "$conn_name" 802-3-ethernet.cloned-mac-address "$new_mac" ipv4.method auto ipv6.method auto 2>&1 && log "SUCCESS" "连接创建成功"
+            log "DETAIL" "激活新连接..."
+            nmcli con up "$conn_name" 2>/dev/null && log "SUCCESS" "连接激活成功"
+        fi
+    fi
+    
+    return 0
+}
+
+# 扫描并处理所有enp*s*网口（只匹配如enp2s0、enp3s0格式）
+log "STEP" "扫描网络接口..."
+eth_devices=($(ip link show | grep -oP '^\d+:\s*\K(enp[0-9]s[0-9])(?!-ovs)' | sort -u))
+if [[ ${#eth_devices[@]} -eq 0 ]]; then
+    log "WARNING" "未找到enp*s*网口"
+else
+    log "INFO" "发现网口: ${eth_devices[*]}"
+    
+    success=0
+    for iface in "${eth_devices[@]}"; do
+        if modify_iface "$iface"; then
+            ((success++))
+            log "SUCCESS" "$iface 处理成功"
+        else
+            log "ERROR" "$iface 处理失败"
+        fi
+    done
+    
+    log "STEP" "处理完成"
+    log "INFO" "成功处理 $success/${#eth_devices[@]} 个网口"
+    
+    # 显示当前配置
+    if [[ $success -gt 0 ]]; then
+        log "INFO" "当前配置:"
+        for iface in "${eth_devices[@]}"; do
+            # 获取接口的连接名称
+            conn=$(nmcli -t -f GENERAL.CONNECTION dev show "$iface" 2>/dev/null | cut -d: -f2)
+            
+            # 尝试从连接获取MAC地址
+            mac=""
+            if [[ -n "$conn" && "$conn" != "--" ]]; then
+                mac=$(nmcli -t con show "$conn" 2>/dev/null | grep 802-3-ethernet.cloned-mac-address | cut -d: -f2-)
+            fi
+            
+            # 如果从连接获取失败，尝试从接口直接获取
+            if [[ -z "$mac" || "$mac" == "--" ]]; then
+                mac=$(ip link show "$iface" 2>/dev/null | grep "link/ether" | awk '{print $2}')
+            fi
+            
+            # 获取接口状态
+            state=$(cat "/sys/class/net/${iface}/operstate" 2>/dev/null || echo "未知")
+            
+            log "DETAIL" "$iface: $conn | MAC:${mac:-未设置} | 状态:$state"
+        done
+    fi
+fi
+# =============================================================================
+# 安装完成
+# =============================================================================
+log "SUCCESS" "==================== 安装完成 ===================="
+
+exit 0

@@ -1,0 +1,290 @@
+[
+    {
+        "stepTitle": "屏幕设置",
+        "description": "配置屏幕开关、亮度和壁纸轮播功能",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "<font color='#52c41a'><b>📺 屏幕显示设置</b></font><br>💡 提示：配置屏幕默认显示模式，鼠标左键可切换页面，右键可开关屏幕"
+            },
+            {
+                "type": "radio",
+                "field": "config_screen_mode",
+                "label": "📺 默认显示模式",
+                "initValue": "weather",
+                "options": [
+                    {
+                        "label": "关闭屏幕",
+                        "value": "off"
+                    },
+                    {
+                        "label": "时间天气",
+                        "value": "weather"
+                    },
+                    {
+                        "label": "资源监控",
+                        "value": "monitor"
+                    }
+                ],
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请选择屏幕显示模式"
+                    }
+                ]
+            },
+            {
+                "type": "radio",
+                "field": "config_screen_brightness",
+                "label": "💡 屏幕亮度",
+                "initValue": "18000",
+                "options": [
+                    {
+                        "label": "低亮度 - 18000",
+                        "value": "18000"
+                    },
+                    {
+                        "label": "标准亮度 - 36000",
+                        "value": "36000"
+                    },
+                    {
+                        "label": "高亮度 - 54000",
+                        "value": "54000"
+                    },
+                    {
+                        "label": "最高亮度 - 72000",
+                        "value": "72000"
+                    }
+                ],
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请选择屏幕亮度"
+                    }
+                ],
+                "show": "{{config_screen_mode !== 'weather'}}"
+            },
+            {
+                "type": "radio",
+                "field": "config_bg_interval",
+                "label": "🖼️ 壁纸轮播间隔",
+                "initValue": "60",
+                "options": [
+                    {
+                        "label": "1秒",
+                        "value": "1"
+                    },
+                    {
+                        "label": "30秒",
+                        "value": "30"
+                    },
+                    {
+                        "label": "1分钟",
+                        "value": "60"
+                    },
+                    {
+                        "label": "5分钟",
+                        "value": "300"
+                    },
+                    {
+                        "label": "15分钟",
+                        "value": "900"
+                    },
+                    {
+                        "label": "30分钟",
+                        "value": "1800"
+                    },
+                    {
+                        "label": "1小时",
+                        "value": "3600"
+                    },
+                    {
+                        "label": "24小时",
+                        "value": "86400"
+                    }
+                ],
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请选择壁纸轮播间隔"
+                    }
+                ],
+                "helpText": "设置壁纸自动切换的时间间隔"
+            }
+        ]
+    },
+    {
+        "stepTitle": "RGB灯光设置",
+        "description": "配置RGB彩灯模式和颜色效果",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "<font color='#52c41a'><b>🌈 RGB灯光设置</b></font><br>💡 提示：配置RGB彩灯模式和颜色效果"
+            },
+            {
+                "type": "radio",
+                "field": "config_rgb_mode",
+                "label": "🌈 RGB彩灯模式",
+                "initValue": "rainbow",
+                "options": [
+                    {
+                        "label": "彩虹模式",
+                        "value": "rainbow"
+                    },
+                    {
+                        "label": "呼吸模式",
+                        "value": "breathing"
+                    },
+                    {
+                        "label": "单色常亮",
+                        "value": "solid"
+                    },
+                    {
+                        "label": "关闭灯光",
+                        "value": "off"
+                    }
+                ],
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请选择RGB彩灯模式"
+                    }
+                ]
+            },
+            {
+                "type": "radio",
+                "field": "config_rgb_color",
+                "label": "🎨 颜色选择",
+                "initValue": "green",
+                "options": [
+                    {
+                        "label": "红色 - 热情活力",
+                        "value": "red"
+                    },
+                    {
+                        "label": "橙色 - 温暖舒适",
+                        "value": "orange"
+                    },
+                    {
+                        "label": "黄色 - 明亮活泼",
+                        "value": "yellow"
+                    },
+                    {
+                        "label": "绿色 - 清新自然",
+                        "value": "green"
+                    },
+                    {
+                        "label": "青色 - 科技时尚",
+                        "value": "cyan"
+                    },
+                    {
+                        "label": "蓝色 - 沉稳专业",
+                        "value": "blue"
+                    },
+                    {
+                        "label": "紫色 - 神秘优雅",
+                        "value": "purple"
+                    },
+                    {
+                        "label": "白色 - 纯净明亮",
+                        "value": "white"
+                    }
+                ],
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请选择颜色"
+                    }
+                ],
+                "show": "{{config_rgb_mode === 'breathing' || config_rgb_mode === 'solid'}}"
+            }
+        ]
+    },
+    {
+        "stepTitle": "风扇控制设置",
+        "description": "配置风扇控制模式",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "<font color='#52c41a'><b>🌡️ 风扇控制模式</b></font><br>💡 提示：选择风扇控制模式，自动模式由系统智能控制，手动模式可自定义档位"
+            },
+            {
+                "type": "switch",
+                "field": "config_fan_auto_mode",
+                "label": "🌪️ 风扇自动模式",
+                "initValue": "true",
+                "helpText": "开启后风扇由系统根据温度自动调节，关闭后可手动设置档位"
+            },
+            {
+                "type": "radio",
+                "field": "config_cpu_fan_level",
+                "label": "🖥️ CPU风扇手动档位",
+                "initValue": "2",
+                "options": [
+                    {
+                        "label": "1 - 静音模式",
+                        "value": "1"
+                    },
+                    {
+                        "label": "2 - 节能模式",
+                        "value": "2"
+                    },
+                    {
+                        "label": "3 - 标准模式",
+                        "value": "3"
+                    },
+                    {
+                        "label": "4 - 性能模式",
+                        "value": "4"
+                    },
+                    {
+                        "label": "5 - 强劲模式",
+                        "value": "5"
+                    }
+                ],
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请选择CPU风扇档位"
+                    }
+                ],
+                "show": "{{config_fan_auto_mode === false}}"
+            },
+            {
+                "type": "radio",
+                "field": "config_hdd_fan_level",
+                "label": "💾 硬盘风扇手动档位",
+                "initValue": "1",
+                "options": [
+                    {
+                        "label": "1 - 静音模式",
+                        "value": "1"
+                    },
+                    {
+                        "label": "2 - 节能模式",
+                        "value": "2"
+                    },
+                    {
+                        "label": "3 - 标准模式",
+                        "value": "3"
+                    },
+                    {
+                        "label": "4 - 性能模式",
+                        "value": "4"
+                    },
+                    {
+                        "label": "5 - 强劲模式",
+                        "value": "5"
+                    }
+                ],
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请选择硬盘风扇档位"
+                    }
+                ],
+                "show": "{{config_fan_auto_mode === false}}"
+            }
+        ]
+    }
+]

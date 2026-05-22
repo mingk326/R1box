@@ -1,0 +1,17 @@
+{
+    "defaults": {
+        "run-as": "root"
+    },
+    "resource": {
+        "data-share": [
+            "/sys/class/hwmon",
+            "/sys/class/graphics",
+            "/sys/class/net",
+            "/sys/devices",
+            "/dev/i2c-*",
+            "/sys/class/dmi/id",
+            "/etc/machine-id",
+            "/dev/fb0"
+        ]
+    }
+}

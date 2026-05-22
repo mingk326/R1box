@@ -1,0 +1,271 @@
+#!/bin/bash
+
+# =============================================================================
+# 海康R1设备管理应用 - 配置回调脚本
+# 功能：处理配置变更，应用新的系统设置，包括RGB灯配置、屏幕设置、风扇控制等
+# =============================================================================
+
+# 统一的日志函数 - 提供标准化的日志输出格式
+log() {
+    local level="$1"
+    local message="$2"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    case "$level" in
+        "INFO") echo -e "[$timestamp]\t📋信息\t\t$message" ;;
+        "SUCCESS") echo -e "[$timestamp]\t✅成功\t\t$message" ;;
+        "WARNING") echo -e "[$timestamp]\t🚨警告\t\t$message" ;;
+        "ERROR") echo -e "[$timestamp]\t❌错误\t\t$message" ;;
+        "STEP") echo -e "[$timestamp]\t🔧步骤\t\t$message" ;;
+        "DEBUG") echo -e "[$timestamp]\t🔍调试\t\t$message" ;;
+        "DETAIL") echo -e "[$timestamp]\t📊详情\t\t$message" ;;
+        *) echo -e "[$timestamp]\t📋信息\t\t$message" ;;
+    esac
+}
+
+log "STEP" "==================== 开始配置 ===================="
+
+# 读取配置参数（从环境变量获取），按wizard\config顺序排列
+screen_mode="${config_screen_mode}"
+screen_brightness="${config_screen_brightness}"
+bg_interval="${config_bg_interval}"
+rgb_mode="${config_rgb_mode}"
+rgb_color="${config_rgb_color}"
+fan_auto_mode="${config_fan_auto_mode}"
+cpu_fan_level="${config_cpu_fan_level}"
+hdd_fan_level="${config_hdd_fan_level}"
+
+log "INFO" "配置参数: 屏幕模式=$screen_mode, 屏幕亮度=$screen_brightness, 壁纸轮播间隔=$bg_interval, RGB模式=$rgb_mode, RGB颜色=$rgb_color, 风扇自动模式=$fan_auto_mode, CPU风扇=$cpu_fan_level, HDD风扇=$hdd_fan_level"
+
+# =============================================================================
+# 步骤1: 屏幕亮度设置
+# =============================================================================
+
+# 设置屏幕亮度
+set_screen_brightness() {
+    local brightness="$1"
+    
+    log "STEP" "设置屏幕亮度"
+    
+    # 使用有效的背光路径
+    BACKLIGHT_PATH="/sys/devices/pci0000:00/0000:00:02.0/drm/card0/card0-DSI-1/intel_backlight/brightness"
+    
+    if [ -f "$BACKLIGHT_PATH" ]; then
+        echo "$brightness" > "$BACKLIGHT_PATH"
+        log "SUCCESS" "屏幕亮度设置为: $brightness"
+    else
+        log "ERROR" "背光控制文件不存在: $BACKLIGHT_PATH"
+    fi
+}
+
+# =============================================================================
+# 步骤2: 屏幕开关设置
+# =============================================================================
+
+# 设置屏幕默认显示模式
+set_screen_mode() {
+    local screen_mode="$1"
+    
+    log "STEP" "设置屏幕默认显示模式"
+    
+    # 使用有效的背光路径
+    BACKLIGHT_PATH="/sys/devices/pci0000:00/0000:00:02.0/drm/card0/card0-DSI-1/intel_backlight/brightness"
+    
+    case "$screen_mode" in
+        "off")
+            # 设置默认关闭屏幕
+            echo 1 > "/sys/class/graphics/fb0/blank"
+            if [ -f "$BACKLIGHT_PATH" ]; then
+                echo 0 > "$BACKLIGHT_PATH"
+            fi
+            log "SUCCESS" "屏幕默认模式已设置为：关闭"
+            ;;
+        "weather"|"monitor")
+            # 设置默认开启屏幕
+            echo 0 > "/sys/class/graphics/fb0/blank"
+            # 恢复背光亮度
+            if [ -f "$BACKLIGHT_PATH" ]; then
+                echo "$screen_brightness" > "$BACKLIGHT_PATH"
+            fi
+            log "SUCCESS" "屏幕默认模式已设置为：$screen_mode（鼠标仍可切换）"
+            ;;
+        *)
+            log "WARNING" "无效的屏幕显示模式: $screen_mode"
+            ;;
+    esac
+}
+
+# =============================================================================
+# 步骤3: RGB灯模式配置
+# =============================================================================
+
+# 设置RGB灯模式
+set_rgb_mode() {
+    local rgb_mode="$1"
+    local rgb_color="$2"
+    
+    log "STEP" "配置RGB灯显示模式"
+    
+    # 颜色预设库
+    declare -A COLOR_PRESETS=(
+        [red]="255 0 0"     [green]="0 255 0"   [blue]="0 0 255"
+        [yellow]="255 255 0"   [purple]="255 0 255"   [cyan]="0 255 255" [orange]="255 165 0"
+        [white]="255 255 255"
+    )
+    
+    # 根据颜色选择设置颜色
+    SOLID_COLOR="${COLOR_PRESETS[$rgb_color]}"
+    BREATHING_COLOR="${COLOR_PRESETS[$rgb_color]}"
+    
+    # 使用i2ctool动态检测I2C总线
+    I2C_BUS=""
+    
+    # 加载I2C设备驱动模块
+    lsmod | grep -q i2c_dev || modprobe i2c_dev 2>/dev/null
+    
+    I2C_BUSES=$(i2cdetect -l 2>/dev/null | awk '{print $1}' | sed 's/i2c-//' | tr '\n' ' ')
+    
+    if [ -n "$I2C_BUSES" ]; then
+        log "DETAIL" "检测到可用I2C总线: $I2C_BUSES"
+        for bus in $I2C_BUSES; do
+            if [ -c "/dev/i2c-$bus" ] && i2cget -f -y $bus 0x26 0x90 2>/dev/null >/dev/null; then
+                I2C_BUS=$bus
+                log "DETAIL" "找到RGB灯控制设备在总线$I2C_BUS上"
+                break
+            fi
+        done
+    fi
+    
+    if [ -n "$I2C_BUS" ]; then
+        # 先重置RGB灯状态
+        log "DETAIL" "重置RGB灯状态"
+        i2cset -f -y $I2C_BUS 0x26 0x90 0x0
+        i2cset -f -y $I2C_BUS 0x26 0x92 0
+        i2cset -f -y $I2C_BUS 0x26 0x93 0
+        i2cset -f -y $I2C_BUS 0x26 0x94 0
+        sleep 0.2
+        
+        # 根据模式设置RGB灯
+        case "$rgb_mode" in
+            "off")
+                log "DETAIL" "设置RGB灯关闭模式"
+                i2cset -f -y $I2C_BUS 0x26 0x90 0x0
+                sleep 0.2
+                if i2cget -f -y $I2C_BUS 0x26 0x90 2>/dev/null | grep -q "0x00"; then
+                    log "SUCCESS" "RGB灯关闭模式设置成功"
+                else
+                    log "ERROR" "RGB灯关闭模式设置失败"
+                fi
+                ;;
+            "breathing")
+                if [ -n "$BREATHING_COLOR" ]; then
+                    read -r R G B <<< "$BREATHING_COLOR"
+                    log "DETAIL" "设置RGB灯呼吸模式: R=$R G=$G B=$B"
+                    i2cset -f -y $I2C_BUS 0x26 0x92 $R
+                    i2cset -f -y $I2C_BUS 0x26 0x93 $G
+                    i2cset -f -y $I2C_BUS 0x26 0x94 $B
+                    sleep 0.1
+                    i2cset -f -y $I2C_BUS 0x26 0x90 0x3
+                    sleep 0.2
+                    if i2cget -f -y $I2C_BUS 0x26 0x90 2>/dev/null | grep -q "0x03"; then
+                        log "SUCCESS" "RGB灯呼吸模式设置成功"
+                    else
+                        log "ERROR" "RGB灯呼吸模式设置失败"
+                    fi
+                else
+                    log "ERROR" "呼吸模式颜色未定义"
+                fi
+                ;;
+            "rainbow")
+                log "DETAIL" "设置RGB灯彩虹模式"
+                i2cset -f -y $I2C_BUS 0x26 0x90 0x2
+                sleep 0.2
+                if i2cget -f -y $I2C_BUS 0x26 0x90 2>/dev/null | grep -q "0x02"; then
+                    log "SUCCESS" "RGB灯彩虹模式设置成功"
+                else
+                    log "ERROR" "RGB灯彩虹模式设置失败"
+                fi
+                ;;
+            "solid")
+                if [ -n "$SOLID_COLOR" ]; then
+                    read -r R G B <<< "$SOLID_COLOR"
+                    log "DETAIL" "设置RGB灯静态单色常亮模式: R=$R G=$G B=$B"
+                    i2cset -f -y $I2C_BUS 0x26 0x92 $R
+                    i2cset -f -y $I2C_BUS 0x26 0x93 $G
+                    i2cset -f -y $I2C_BUS 0x26 0x94 $B
+                    sleep 0.1
+                    i2cset -f -y $I2C_BUS 0x26 0x90 0x1
+                    sleep 0.2
+                    if i2cget -f -y $I2C_BUS 0x26 0x90 2>/dev/null | grep -q "0x01"; then
+                        log "SUCCESS" "RGB灯静态单色常亮模式设置成功"
+                    else
+                        log "ERROR" "RGB灯静态单色常亮模式设置失败"
+                    fi
+                else
+                    log "ERROR" "单色常亮模式颜色未定义"
+                fi
+                ;;
+            *)
+                log "DETAIL" "设置RGB灯默认彩虹模式"
+                if i2cset -f -y $I2C_BUS 0x26 0x90 0x2; then
+                    log "SUCCESS" "RGB灯默认彩虹模式设置成功"
+                else
+                    log "ERROR" "RGB灯默认彩虹模式设置失败"
+                fi
+                ;;
+        esac
+    else
+        log "WARNING" "未找到可用的I2C设备，跳过RGB灯配置"
+    fi
+}
+
+# =============================================================================
+# 步骤4: 风扇控制设置（新方案）
+# =============================================================================
+
+# 风扇控制设置
+apply_fan_settings() {
+    local fan_auto_mode="$1"
+    local cpu_fan_level="$2"
+    local hdd_fan_level="$3"
+    
+    log "STEP" "应用风扇控制设置"
+    
+    log "INFO" "风扇控制由后台Python脚本处理，当前设置已记录"
+    
+    # 将配置参数设置为环境变量供后台脚本使用
+    export config_fan_auto_mode="$fan_auto_mode"
+    export config_cpu_fan_level="$cpu_fan_level"
+    export config_hdd_fan_level="$hdd_fan_level"
+    
+    log "SUCCESS" "风扇配置已设置为环境变量: auto_mode=$fan_auto_mode, cpu_level=$cpu_fan_level, hdd_level=$hdd_fan_level"
+}
+
+# =============================================================================
+# 步骤5: 配置处理主流程
+# =============================================================================
+
+log "STEP" "开始处理配置变更"
+
+# 设置屏幕显示模式
+set_screen_mode "$screen_mode"
+
+# 只有在屏幕开启时才设置亮度
+if [ "$screen_mode" = "weather" ] || [ "$screen_mode" = "monitor" ]; then
+    set_screen_brightness "$screen_brightness"
+else
+    log "INFO" "屏幕已关闭，跳过亮度设置"
+fi
+
+# 设置RGB灯模式
+set_rgb_mode "$rgb_mode" "$rgb_color"
+
+# 处理壁纸轮播间隔
+log "INFO" "壁纸轮播间隔设置为: ${bg_interval}秒"
+
+# 应用风扇控制设置
+apply_fan_settings "$fan_auto_mode" "$cpu_fan_level" "$hdd_fan_level"
+
+log "SUCCESS" "==================== 配置结束 ===================="
+
+exit 0

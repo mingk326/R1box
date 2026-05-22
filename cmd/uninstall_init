@@ -1,0 +1,141 @@
+#!/bin/bash
+
+# =============================================================================
+# 海康R1设备管理应用 - 卸载初始化脚本
+# 功能：应用卸载时的清理和恢复操作，关闭RGB灯
+# =============================================================================
+
+# 统一的日志函数 - 提供标准化的日志输出格式
+log() {
+    local level="$1"
+    local message="$2"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    case "$level" in
+        "INFO") echo -e "[$timestamp]\t📋信息\t\t$message" ;;
+        "SUCCESS") echo -e "[$timestamp]\t✅成功\t\t$message" ;;
+        "WARNING") echo -e "[$timestamp]\t🚨警告\t\t$message" ;;
+        "ERROR") echo -e "[$timestamp]\t❌错误\t\t$message" ;;
+        "STEP") echo -e "[$timestamp]\t🔧步骤\t\t$message" ;;
+        "DEBUG") echo -e "[$timestamp]\t🔍调试\t\t$message" ;;
+        "DETAIL") echo -e "[$timestamp]\t📊详情\t\t$message" ;;
+        *) echo -e "[$timestamp]\t📋信息\t\t$message" ;;
+    esac
+}
+
+# 权限检查 - 确保脚本以root权限运行
+[ "$EUID" -ne 0 ] && log "ERROR" "需要root权限" && exit 1
+
+log "STEP" "==================== 开始卸载 ===================="
+
+# =============================================================================
+# 步骤1: 关闭RGB灯光
+# =============================================================================
+
+log "STEP" "步骤1: 关闭RGB灯光显示"
+
+# 优先使用保存的I2C总线信息关闭RGB灯
+if [ -f /tmp/r1_i2c_bus ]; then
+    source /tmp/r1_i2c_bus
+    if [ -n "$I2C_BUS" ]; then
+        log "DETAIL" "使用保存的I2C总线: $I2C_BUS"
+        if i2cset -f -y $I2C_BUS 0x26 0x90 0x0 >/dev/null 2>&1; then
+            log "SUCCESS" "RGB灯已关闭"
+        else
+            log "WARNING" "RGB灯关闭失败"
+        fi
+    else
+        log "WARNING" "保存的I2C总线信息无效"
+    fi
+else
+    log "DETAIL" "未找到保存的I2C总线信息，动态检测"
+    # 如果没有保存的I2C总线信息，使用i2ctool动态列出所有可用的I2C总线
+    I2C_BUSES=$(i2cdetect -l 2>/dev/null | awk '{print $1}' | sed 's/i2c-//' | tr '\n' ' ')
+    
+    if [ -z "$I2C_BUSES" ]; then
+        # 如果i2cdetect无法列出总线，尝试扫描/dev/i2c-*设备文件
+        I2C_BUSES=$(ls /dev/i2c-* 2>/dev/null | sed 's/\/dev\/i2c-//' | tr '\n' ' ')
+    fi
+    
+    if [ -n "$I2C_BUSES" ]; then
+        log "DETAIL" "检测到可用I2C总线: $I2C_BUSES"
+        for bus in $I2C_BUSES; do
+            if i2cset -f -y $bus 0x26 0x90 0x0 >/dev/null 2>&1; then
+                log "SUCCESS" "RGB灯已关闭 (总线$bus)"
+                break
+            fi
+        done
+    else
+        log "WARNING" "未检测到任何I2C总线设备，无法关闭RGB灯"
+    fi
+fi
+
+# =============================================================================
+# 步骤2: 恢复屏幕显示状态
+# =============================================================================
+
+log "STEP" "步骤2: 恢复屏幕显示状态"
+
+# 恢复屏幕亮度到默认值
+BRIGHTNESS_PATH="/sys/devices/pci0000:00/0000:00:02.0/drm/card0/card0-DSI-1/intel_backlight/brightness"
+if [ -f "$BRIGHTNESS_PATH" ]; then
+    echo 96000 > "$BRIGHTNESS_PATH"
+    log "SUCCESS" "屏幕亮度已恢复为默认值96000"
+else
+    log "WARNING" "背光控制文件不存在: $BRIGHTNESS_PATH"
+fi
+
+# 快速清空framebuffer，显示黑色背景
+if [ -c /dev/fb0 ]; then
+    dd if=/dev/zero of=/dev/fb0 bs=4K count=1 >/dev/null 2>&1
+    log "SUCCESS" "framebuffer已清空"
+else
+    log "WARNING" "帧缓冲设备不存在: /dev/fb0"
+fi
+
+# =============================================================================
+# 步骤3: 恢复系统登录界面
+# =============================================================================
+
+log "STEP" "步骤3: 恢复系统登录界面"
+
+# 重启getty服务，恢复tty1登录界面
+if systemctl restart getty@tty1.service 2>/dev/null; then
+    log "SUCCESS" "tty1 getty服务已重启"
+else
+    log "WARNING" "tty1 getty服务重启失败"
+fi
+
+# 强制切换到tty1，确保显示登录界面
+if chvt 1 2>/dev/null; then
+    log "SUCCESS" "已切换到tty1"
+else
+    log "WARNING" "切换到tty1失败"
+fi
+
+# =============================================================================
+# 步骤4: 卸载软件包、字体和i2c工具
+# =============================================================================
+
+log "STEP" "步骤5: 卸载应用依赖包和i2c工具"
+
+# 卸载Python应用相关的依赖包和i2c工具
+for pkg in python3-pygame python3-psutil python3-requests fonts-wqy-microhei i2c-tools; do
+    if dpkg -l | grep -q "^ii.*$pkg "; then
+        apt-get remove -y --purge $pkg >/dev/null 2>&1
+        log "SUCCESS" "卸载: $pkg"
+    else
+        log "DETAIL" "$pkg 未安装"
+    fi
+done
+
+# 清理自动安装的依赖包
+apt-get autoremove -y >/dev/null 2>&1
+log "SUCCESS" "软件包依赖已清理"
+
+# =============================================================================
+# 卸载完成
+# =============================================================================
+log "SUCCESS" "==================== 卸载完成 ===================="
+
+exit 0

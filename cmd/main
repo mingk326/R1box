@@ -1,0 +1,270 @@
+#!/bin/bash
+
+# =============================================================================
+# 海康R1设备管理应用 - 主控制脚本
+# 功能：应用进程管理，包括启动、停止、状态检查等核心控制功能
+# 规范：遵循飞牛官方环境变量规范，确保与系统集成兼容
+# =============================================================================
+
+# 屏幕监控应用日志文件路径
+MNO_LOG_FILE="${TRIM_PKGVAR}/mno_info.log"
+# 屏幕监控应用进程ID文件路径
+MNO_PID_FILE="${TRIM_PKGVAR}/mno_app.pid"
+
+# 风扇控制应用日志文件路径
+FAN_LOG_FILE="${TRIM_PKGVAR}/fan_info.log"
+# 风扇控制应用进程ID文件路径
+FAN_PID_FILE="${TRIM_PKGVAR}/fan_app.pid"
+
+# 切换到应用目录，确保相对路径引用正确
+cd "${TRIM_APPDEST}"
+
+# 屏幕监控应用启动命令 - 显示硬件监控信息（合并版本）
+MNO_CMD="DATA_DIR=${DATA_DIR} python3 \"${TRIM_APPDEST}/screen_mon.py\""
+
+# 风扇控制命令 - 使用i2c和it87驱动控制风扇
+FAN_CMD="DATA_DIR=${DATA_DIR} python3 \"${TRIM_APPDEST}/fans_control.py\""
+
+# =============================================================================
+# 日志记录函数
+# 功能：提供标准化的日志记录格式，包含时间戳和消息内容
+# 参数：$1 - 日志类型 (mno 或 fan)，$2 - 日志消息内容
+# =============================================================================
+log_msg() {
+    local log_type=$1
+    local message=$2
+    
+    case $log_type in
+        "mno")
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - $message" >> ${MNO_LOG_FILE}
+            ;;
+        "fan")
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - $message" >> ${FAN_LOG_FILE}
+            ;;
+        *)
+            # 其他信息直接忽略
+            ;;
+    esac
+}
+
+# =============================================================================
+# 启动应用进程
+# 功能：检查应用状态，如未运行则启动应用进程并记录进程ID
+# 返回：0表示启动成功或进程已运行，非0表示启动失败
+# =============================================================================
+start_process() {
+    # 检查应用是否已在运行，避免重复启动
+    if status; then
+        return 0
+    fi
+
+    # 检查并安装必要的系统依赖包
+    for pkg in python3-pygame python3-psutil python3-requests fonts-wqy-microhei i2c-tools; do
+        # 检查包是否已安装
+        if ! dpkg -l "$pkg" 2>/dev/null | grep -q "^ii"; then
+            # 如果包未安装，尝试安装
+            apt-get update >/dev/null 2>&1 && apt-get install -y "$pkg" >/dev/null 2>&1
+        fi
+    done
+
+    # 加载I2C设备驱动模块
+    lsmod | grep -q i2c_dev || modprobe i2c_dev 2>/dev/null
+    
+    # 启动屏幕监控进程
+    # 执行启动命令，将输出重定向到日志文件
+    bash -c "${MNO_CMD}" >> ${MNO_LOG_FILE} 2>&1 &
+    # 记录进程ID到PID文件，用于后续状态管理
+    printf "%s" "$!" > ${MNO_PID_FILE}
+    
+    # 启动风扇控制脚本
+    log_msg "fan" "Starting fan control process..."
+    # 执行启动命令，将输出重定向到日志文件
+    bash -c "${FAN_CMD}" >> ${FAN_LOG_FILE} 2>&1 &
+    # 记录风扇控制进程ID到单独的PID文件
+    printf "%s" "$!" > ${FAN_PID_FILE}
+    
+    return 0
+}
+
+# =============================================================================
+# 停止应用进程
+# 功能：优雅停止应用进程，先发送TERM信号，超时后发送KILL信号强制终止
+# 返回：0表示停止成功，非0表示停止失败
+# =============================================================================
+stop_process() {
+    log_msg "fan" "Stopping fan control process ..."
+
+    # 停止风扇控制进程
+    if [ -r "${FAN_PID_FILE}" ]; then
+        fan_pid=$(head -n 1 "${FAN_PID_FILE}" | tr -d '[:space:]')
+        
+        # 检查风扇控制进程是否实际存在
+        if [ -n "$fan_pid" ] && check_process "${fan_pid}"; then
+            log_msg "fan" "fan_pid=${fan_pid}"
+            
+            # 发送TERM信号，尝试优雅停止风扇控制进程
+            log_msg "fan" "Sending TERM signal to Fan PID: ${fan_pid}..."
+            kill -TERM ${fan_pid} >> ${FAN_LOG_FILE} 2>&1
+
+            # 等待进程终止，最多等待3秒
+            local count=0
+            while check_process "${fan_pid}" && [ $count -lt 3 ]; do
+                sleep 1
+                count=$((count + 1))
+                log_msg "fan" "Waiting for fan process to terminate... (${count}s/10s)"
+            done
+
+            # 如果进程仍未终止，发送KILL信号强制终止
+            if check_process "${fan_pid}"; then
+                log_msg "fan" "Sending KILL signal to Fan PID: ${fan_pid}..."
+                kill -KILL "${fan_pid}"
+                sleep 1
+                rm -f "${FAN_PID_FILE}"
+            else
+                log_msg "fan" "Fan process terminated successfully..."
+            fi
+        else
+            # 进程不存在但PID文件存在，清理无效的PID文件
+            rm -f "${FAN_PID_FILE}"
+            log_msg "fan" "remove fan pid file"
+        fi
+    fi
+
+    log_msg "mno" "Stopping screen monitor process ..."
+
+    # 停止屏幕监控进程
+    if [ -r "${MNO_PID_FILE}" ]; then
+        mno_pid=$(head -n 1 "${MNO_PID_FILE}" | tr -d '[:space:]')
+        
+        # 检查屏幕监控进程是否实际存在
+        if [ -n "$mno_pid" ] && check_process "${mno_pid}"; then
+            log_msg "mno" "mno_pid=${mno_pid}"
+            
+            # 发送TERM信号，尝试优雅停止屏幕监控进程
+            log_msg "mno" "Sending TERM signal to Screen Monitor PID: ${mno_pid}..."
+            kill -TERM ${mno_pid} >> ${MNO_LOG_FILE} 2>&1
+
+            # 等待进程终止，最多等待10秒
+            local count=0
+            while check_process "${mno_pid}" && [ $count -lt 10 ]; do
+                sleep 1
+                count=$((count + 1))
+                log_msg "mno" "Waiting for screen monitor process to terminate... (${count}s/3s)"
+            done
+
+            # 如果进程仍未终止，发送KILL信号强制终止
+            if check_process "${mno_pid}"; then
+                log_msg "mno" "Sending KILL signal to Screen Monitor PID: ${mno_pid}..."
+                kill -KILL "${mno_pid}"
+                sleep 1
+                rm -f "${MNO_PID_FILE}"
+            else
+                log_msg "mno" "Screen monitor process terminated successfully..."
+            fi
+        else
+            # 进程不存在但PID文件存在，清理无效的PID文件
+            rm -f "${MNO_PID_FILE}"
+            log_msg "mno" "remove mno pid file"
+        fi
+    fi
+
+    return 0
+}
+
+# =============================================================================
+# 检查进程状态
+# 功能：通过发送信号0检查指定进程ID是否正在运行
+# 参数：pid - 要检查的进程ID
+# 返回：0表示进程存在，1表示进程不存在
+# =============================================================================
+check_process() {
+    local pid=$1
+    if kill -0 "${pid}" 2>/dev/null; then
+        return 0  # 进程存在
+    else
+        return 1  # 进程不存在
+    fi
+}
+
+# =============================================================================
+# 检查应用运行状态
+# 功能：通过PID文件检查应用是否正在运行，清理无效的PID文件
+# 返回：0表示应用正在运行，1表示应用未运行
+# =============================================================================
+status() {
+    local mno_running=0
+    local fan_running=0
+
+    # 检查屏幕监控进程
+    if [ -r "${MNO_PID_FILE}" ]; then
+        mno_pid=$(head -n 1 "${MNO_PID_FILE}" | tr -d '[:space:]')
+
+        if [ -n "$mno_pid" ] && check_process "$mno_pid"; then
+            mno_running=1
+            echo "Screen monitor is running. PID: ${mno_pid}"
+            # 注释掉重复的PID日志记录，只在启动时记录一次
+            # log_msg "mno" "mno_pid=${mno_pid}"
+        else
+            # 清理无效的PID文件
+            rm -f "${MNO_PID_FILE}"
+            echo "Screen monitor is not running."
+            log_msg "mno" "remove mno pid file"
+        fi
+    else
+        echo "Screen monitor is not running."
+    fi
+
+    # 检查风扇控制进程
+    if [ -r "${FAN_PID_FILE}" ]; then
+        fan_pid=$(head -n 1 "${FAN_PID_FILE}" | tr -d '[:space:]')
+
+        if [ -n "$fan_pid" ] && check_process "$fan_pid"; then
+            fan_running=1
+            echo "Fan control is running. PID: ${fan_pid}"
+            # 注释掉重复的PID日志记录，只在启动时记录一次
+            # log_msg "fan" "fan_pid=${fan_pid}"
+        else
+            # 清理无效的PID文件
+            rm -f "${FAN_PID_FILE}"
+            echo "Fan control is not running."
+            log_msg "fan" "remove fan pid file"
+        fi
+    else
+        echo "Fan control is not running."
+    fi
+
+    # 如果任一进程在运行，则返回0（成功）
+    if [ $mno_running -eq 1 ] || [ $fan_running -eq 1 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# =============================================================================
+# 命令行参数处理
+# 功能：解析命令行参数并执行相应的操作
+# 参数：start - 启动应用，stop - 停止应用，status - 检查应用状态
+# =============================================================================
+case $1 in
+start)
+    # 启动应用：成功返回0，失败返回1
+    start_process
+    ;;
+stop)
+    # 停止应用：成功返回0，失败返回1
+    stop_process
+    ;;
+status)
+    # 检查应用状态：运行中返回0，未运行返回3
+    if status; then 
+        exit 0
+    else 
+        exit 3
+    fi
+    ;;
+*)
+    # 无效参数：返回1表示参数错误
+    exit 1
+    ;;
+esac
